@@ -26,6 +26,7 @@ dependencies = [
     "matplotlib>=3.7.0",
     "tqdm>=4.65.0",
     "scipy>=1.10.0",
+    "torchview>=0.2.7",
 ]
 
 [project.urls]
