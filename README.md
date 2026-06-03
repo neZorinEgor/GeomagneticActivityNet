@@ -10,7 +10,8 @@
 | [OMNI 2 dataset (NASA)](https://spdf.gsfc.nasa.gov/pub/data/omni/) | [Документация](asserts/dataset_doc.txt) |
 | [DTU Space Polar Cap](https://ftp.space.dtu.dk/WDC/indices/pcn/PCN_definitive/) | [Readme](https://ftp.space.dtu.dk/WDC/acknowledgements_and_readme.txt) |
 | [Swiss Neutron Monitor Data](https://cosray.unibe.ch/data/nm/data/) | TODO |
-| [Real-time Oulu NM count rate](https://cosmicrays.oulu.fi/) | TODO |
+| [Real-time Oulu NM count rate](https://cosmicrays.oulu.fi/) | TODO |\
+> Для удобства, собрал все данные в [архив](https://huggingface.co/neZorinEgor/magnesis/blob/main/data.zip)
 
 ## Прогнозируемые индексы
 
