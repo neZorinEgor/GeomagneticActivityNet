@@ -5,15 +5,14 @@ import joblib
 import numpy as np
 import pandas as pd
 import scipy.stats as stats
-
 import torch
 from torch.utils.data import DataLoader
 
-from .model import GeomagneticModelV1
-from .validator import GNDataValidatorImpl
-from .dataset import GeomagneticDataset
 from .constants import FILL_VALIES
+from .dataset import GeomagneticDataset
+from .model import GeomagneticModelV1
 from .schemas import GeomagnesisResult
+from .validator import GNDataValidatorImpl
 
 deviceType: TypeAlias = Literal["cuda", "cpu"]
 
@@ -27,9 +26,15 @@ class GeomagneticNet:
         self.__y_scaler_path = model_dir / "GN_y_scaler.joblib"
         self.__model_weights_path = model_dir / "GN_best.pt"
 
-        assert self.__X_scaler_path.exists(), f"В папке {model_dir} отсутствует файл 'GN_X_scaler.joblib'"  # type: ignore
-        assert self.__y_scaler_path.exists(), f"В папке {model_dir} отсутствует файл 'GN_y_scaler.joblib'"  # type: ignore
-        assert self.__model_weights_path.exists(), f"В папке {model_dir} отсутствует файл 'GN_best.pt'"  # type: ignore
+        assert self.__X_scaler_path.exists(), (
+            f"В папке {model_dir} отсутствует файл 'GN_X_scaler.joblib'"
+        )  # type: ignore
+        assert self.__y_scaler_path.exists(), (
+            f"В папке {model_dir} отсутствует файл 'GN_y_scaler.joblib'"
+        )  # type: ignore
+        assert self.__model_weights_path.exists(), (
+            f"В папке {model_dir} отсутствует файл 'GN_best.pt'"
+        )  # type: ignore
 
         self.__device = device
         self.__model = GeomagneticModelV1(
@@ -41,16 +46,74 @@ class GeomagneticNet:
             ae_attention_heads=2,
             forecasts_len=6,
         )
-        self.__model.load_state_dict(torch.load(self.__model_weights_path, map_location=self.__device))  # type: ignore
+        self.__model.load_state_dict(
+            torch.load(self.__model_weights_path, map_location=self.__device)
+        )  # type: ignore
+        self.__X_window_size = 168
         self.__model.to(self.__device)
         self.__X_scaler = joblib.load(self.__X_scaler_path)
         self.__y_scaler = joblib.load(self.__y_scaler_path)
+        self.__omni2full_columns = [
+            "Year",
+            "Decimal Day",
+            "Hour",
+            "Bartels",
+            "IMF_s/c_ID",
+            "Plasma_s/c_ID",
+            "N_IMF_points",
+            "N_Plasma_points",
+            "B_Magnitude_Avg",
+            "B_Vector_Mag",
+            "B_Lat_GSE",
+            "B_Long_GSE",
+            "Bx_GSE",
+            "By_GSE",
+            "Bz_GSE",
+            "By_GSM",
+            "Bz_GSM",
+            "sigma_B_Mag",
+            "sigma_B_Vector",
+            "sigma_Bx",
+            "sigma_By",
+            "sigma_Bz",
+            "T_proton",
+            "Np_density",
+            "V_plasma",
+            "V_Long_GSE",
+            "V_Lat_GSE",
+            "Na/Np",
+            "P_dyn",
+            "sigma_T",
+            "sigma_N",
+            "sigma_V",
+            "sigma_phi_V",
+            "sigma_theta_V",
+            "sigma_Na/Np",
+            "E_field",
+            "Plasma_beta",
+            "Alfven_Mach",
+            "Kp",
+            "R_sunspot",
+            "Dst",
+            "AE",
+            "P_flux_>1MeV",
+            "P_flux_>2MeV",
+            "P_flux_>4MeV",
+            "P_flux_>10MeV",
+            "P_flux_>30MeV",
+            "P_flux_>60MeV",
+            "Flag",
+            "ap",
+            "f10.7",
+            "PC(N)",
+            "AL",
+            "AU",
+            "Mach_num",
+        ]
 
     def __preprocessing(
-        self,
-        geomagnetic_df: pd.DataFrame,
-        batch_size: int,
-    ) -> DataLoader:
+        self, geomagnetic_df: pd.DataFrame, batch_size: int, get_df_only: bool = False
+    ) -> DataLoader | pd.DataFrame:
         dataset = geomagnetic_df.copy()
         required_columns = [
             "Bz_GSM",
@@ -84,6 +147,9 @@ class GeomagneticNet:
             dataset[col] = dataset[col].replace(FILL_VALIES[col], np.nan)
         features = [i for i in dataset.columns if i != "datetime"]
         # Nan interpolations
+        if get_df_only:
+            return dataset[features]
+
         dataset[features] = dataset[features].interpolate(method="pchip")
         # Sampling
         X, y = dataset[required_columns], dataset[["Dst", "AE"]]
@@ -92,7 +158,7 @@ class GeomagneticNet:
         torch_dataset = GeomagneticDataset(
             X=X_scaled,
             y=y_scaled,
-            X_window_size=168,
+            X_window_size=self.__X_window_size,
             y_window_size=6,
             stride=6,
         )
@@ -177,6 +243,30 @@ class GeomagneticNet:
         batch_size: int,
     ) -> GeomagnesisResult:
         self.__data_validator.validate(geomagnetic_df)
-        dataloader = self.__preprocessing(geomagnetic_df, batch_size)
-        result_data = self.__inference_and_postprocess(dataloader, alpha=0.95)
+        dataloader = self.__preprocessing(geomagnetic_df, batch_size, get_df_only=False)
+        result_data = self.__inference_and_postprocess(dataloader, alpha=0.95)  # type: ignore
         return GeomagnesisResult(**result_data)
+
+    def predict_next(self, omni2file_path: str):
+        self.__data_validator.is_omni_file(omni2file_path)
+        omni2file_path = Path(omni2file_path)  # type: ignore
+        omni2_df = pd.read_csv(omni2file_path, header=None, sep="\\s+")
+        assert len(omni2_df.columns) == len(self.__omni2full_columns), (
+            f"omni2 файл должен содержать {int(len(self.__omni2full_columns))} колонок, пример: https://spdf.gsfc.nasa.gov/pub/data/omni/low_res_omni/omni2_2025.dat"
+        )
+        omni2_df.columns = self.__omni2full_columns
+        omni2_df = self.__preprocessing(
+            geomagnetic_df=omni2_df,
+            get_df_only=True,
+            batch_size=-1,
+        )
+        complete_rows = omni2_df.notna().all(axis=1)  # type: ignore
+        last_notna_index = int(omni2_df[complete_rows].index[-1])  # type: ignore
+        print(
+            f"Последний найденный индекс без последующих пропусков в файле: {last_notna_index}, {int(last_notna_index / 24)}-й день с начала года"
+        )
+        geomagnetic_df = omni2_df.iloc[:last_notna_index]  # type: ignore
+        if len(geomagnetic_df) < self.__X_window_size:
+            raise Exception("TODO")
+        last_batch = geomagnetic_df.tail(self.__X_window_size)
+        return last_batch
