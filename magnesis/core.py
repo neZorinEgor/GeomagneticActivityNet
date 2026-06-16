@@ -269,4 +269,17 @@ class GeomagneticNet:
         if len(geomagnetic_df) < self.__X_window_size:
             raise Exception("TODO")
         last_batch = geomagnetic_df.tail(self.__X_window_size)
-        return last_batch
+        X_scaled = self.__X_scaler.transform(last_batch)
+        X = torch.FloatTensor(X_scaled).to(self.__device)
+        dst_pred, ae_pred, (dst_attention, ae_attention) = self.__model(X.unsqueeze(0))
+        preds = np.stack(
+            [
+                dst_pred.cpu().detach().numpy().flatten(),
+                ae_pred.cpu().detach().numpy().flatten(),
+            ],
+            axis=1,
+        )
+        preds = self.__y_scaler.inverse_transform(preds)
+        dst_preds = preds[:, 0]
+        ae_preds = preds[:, 1]
+        return (dst_preds, ae_preds, dst_attention, ae_attention), last_batch
