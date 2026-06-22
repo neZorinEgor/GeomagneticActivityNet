@@ -1,5 +1,10 @@
+import os
+from glob import glob
+from pathlib import Path
+
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import torch
 from scipy.special import inv_boxcox
 
@@ -170,3 +175,146 @@ def visualize_model(
         "dst_std": dst_std,
         "ae_std": ae_std,
     }
+
+
+def make_dataset(omni2_dir: Path, one_file: bool = False):
+    file_pattern = os.path.join(omni2_dir, "omni2_*.dat*")
+    file_list = glob(file_pattern)
+    if one_file:
+        file_list = [omni2_dir]
+    file_list.sort()
+    df_list = []
+
+    for file in file_list:
+        df_temp = pd.read_csv(file, header=None, sep="\\s+")
+        df_temp.columns = [
+            "Year",
+            "Decimal Day",
+            "Hour",
+            "Bartels",
+            "IMF_s/c_ID",
+            "Plasma_s/c_ID",
+            "N_IMF_points",
+            "N_Plasma_points",
+            "B_Magnitude_Avg",
+            "B_Vector_Mag",
+            "B_Lat_GSE",
+            "B_Long_GSE",
+            "Bx_GSE",
+            "By_GSE",
+            "Bz_GSE",
+            "By_GSM",
+            "Bz_GSM",
+            "sigma_B_Mag",
+            "sigma_B_Vector",
+            "sigma_Bx",
+            "sigma_By",
+            "sigma_Bz",
+            "T_proton",
+            "Np_density",
+            "V_plasma",
+            "V_Long_GSE",
+            "V_Lat_GSE",
+            "Na/Np",
+            "P_dyn",
+            "sigma_T",
+            "sigma_N",
+            "sigma_V",
+            "sigma_phi_V",
+            "sigma_theta_V",
+            "sigma_Na/Np",
+            "E_field",
+            "Plasma_beta",
+            "Alfven_Mach",
+            "Kp",
+            "R_sunspot",
+            "Dst",
+            "AE",
+            "P_flux_>1MeV",
+            "P_flux_>2MeV",
+            "P_flux_>4MeV",
+            "P_flux_>10MeV",
+            "P_flux_>30MeV",
+            "P_flux_>60MeV",
+            "Flag",
+            "ap",
+            "f10.7",
+            "PC(N)",
+            "AL",
+            "AU",
+            "Mach_num",
+        ]
+
+        df_list.append(df_temp)
+
+    full_dataset = pd.concat(df_list, ignore_index=True)
+    columns = [
+        # features
+        "Year",
+        "Decimal Day",
+        "Hour",
+        "Bz_GSM",  # IMF Bz
+        "By_GSM",  # IMF By
+        "Bx_GSE",  # IMF Bx
+        "Kp",  # Kp
+        "f10.7",  # F10.7
+        "AL",  # AL
+        "AU",  # AU
+        "T_proton",  # Proton temperature
+        "Np_density",  # Proton density
+        "V_plasma",  # Bulk speed
+        "V_Long_GSE",  # Bulk flow longitude
+        "V_Lat_GSE",  # Bulk flow latitude
+        # labels
+        "Dst",  # Quick Look Dst-index
+        "AE",  # Quick Look AE
+    ]
+    dataset = full_dataset[columns]
+    dataset["datetime"] = pd.to_datetime(
+        dataset["Year"].astype(str)
+        + "-"
+        + dataset["Decimal Day"].astype(str)
+        + " "
+        + dataset["Hour"].astype(str),
+        format="%Y-%j %H",
+    )
+    dataset = dataset.drop(columns=["Year", "Decimal Day", "Hour"])
+    cols = ["datetime"] + [col for col in dataset.columns if col != "datetime"]
+    dataset = dataset[cols]
+
+    fill_values = {
+        "Bz_GSM": 999.9,
+        "By_GSM": 999.9,
+        "Bx_GSE": 999.9,
+        "Kp": 99,
+        "f10.7": 999.9,
+        "AL": 99999,
+        "AU": 99999,
+        "T_proton": 9999999.0,
+        "Np_density": 999.9,
+        "V_plasma": 9999.0,
+        "V_Long_GSE": 999.9,
+        "V_Lat_GSE": 999.9,
+        "Dst": 99999,
+        "AE": 9999,
+    }
+    for col in dataset.drop(columns=["datetime"]).columns:
+        dataset[col] = dataset[col].replace(fill_values[col], np.nan)
+
+    clean_dataset = dataset.copy()
+    features = [i for i in clean_dataset.columns if i != "datetime"]
+    clean_dataset[features] = clean_dataset[features].interpolate(method="pchip")
+    df = clean_dataset.copy()
+    df["hour"] = df["datetime"].dt.hour
+    df["day_of_year"] = df["datetime"].dt.dayofyear
+    df["day_of_week"] = df["datetime"].dt.dayofweek
+    df["month"] = df["datetime"].dt.month
+    df["hour_sin"] = np.sin(2 * np.pi * df["hour"] / 24)
+    df["hour_cos"] = np.cos(2 * np.pi * df["hour"] / 24)
+    df["day_sin"] = np.sin(2 * np.pi * df["day_of_year"] / 365.25)
+    df["day_cos"] = np.cos(2 * np.pi * df["day_of_year"] / 365.25)
+    df["week_sin"] = np.sin(2 * np.pi * df["day_of_week"] / 7)
+    df["week_cos"] = np.cos(2 * np.pi * df["day_of_week"] / 7)
+    df = df.drop(columns=["hour", "day_of_year", "day_of_week", "month"])
+
+    return df.copy()

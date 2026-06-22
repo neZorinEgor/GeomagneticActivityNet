@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn
 
 
 class GeomagneticDataset(torch.utils.data.Dataset):
@@ -35,4 +36,5 @@ class GeomagneticDataset(torch.utils.data.Dataset):
         y_end_idx = y_start_idx + self.y_window_size
         y_window = self.y[y_start_idx:y_end_idx]  # [y_window_size, 2]
 
-        return x_window, y_window
+        y_6h = y_window[-1, :]
+        return x_window, y_6h.unsqueeze(0)  # [1, 2]

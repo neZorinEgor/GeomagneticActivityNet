@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import Literal, TypeAlias
 
 import joblib
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import scipy.stats as stats
@@ -10,8 +11,9 @@ from torch.utils.data import DataLoader
 
 from .constants import FILL_VALIES
 from .dataset import GeomagneticDataset
-from .model import GeomagneticModelV1
+from .model import GeomagneticModel
 from .schemas import GeomagnesisResult
+from .utils import make_dataset
 from .validator import GNDataValidatorImpl
 
 deviceType: TypeAlias = Literal["cuda", "cpu"]
@@ -36,21 +38,45 @@ class GeomagneticNet:
             f"В папке {model_dir} отсутствует файл 'GN_best.pt'"
         )  # type: ignore
 
+        self.__batch_size = 256
         self.__device = device
-        self.__model = GeomagneticModelV1(
-            lstm_input_size=14,
-            lstm_hidden_size=64,
-            lstm_num_layers=2,
-            lstm_dropout=0.2,
-            dst_attention_heads=2,
-            ae_attention_heads=2,
-            forecasts_len=6,
+        self._model = GeomagneticModel(
+            n_features=19,
+            lstm_hidden_size=30,
+            lstm_num_layers=1,
+            lstm_dropout=0.0,
+            dst_attention_heads=5,
+            ae_attention_heads=15,
         )
-        self.__model.load_state_dict(
+        self._model.load_state_dict(
             torch.load(self.__model_weights_path, map_location=self.__device)
         )  # type: ignore
-        self.__X_window_size = 168
-        self.__model.to(self.__device)
+        self.__required_columns = [
+            "datetime",
+            "Bz_GSM",
+            "By_GSM",
+            "Bx_GSE",
+            "Kp",
+            "f10.7",
+            "AL",
+            "AU",
+            "T_proton",
+            "Np_density",
+            "V_plasma",
+            "V_Long_GSE",
+            "V_Lat_GSE",
+            "Dst",
+            "AE",
+            "hour_sin",
+            "hour_cos",
+            "day_sin",
+            "day_cos",
+            "week_sin",
+            "week_cos",
+        ]
+        self.__X_window_size = 24 * 2
+        self.__y_window_size = 6
+        self._model.to(self.__device)
         self.__X_scaler = joblib.load(self.__X_scaler_path)
         self.__y_scaler = joblib.load(self.__y_scaler_path)
         self.__omni2full_columns = [
@@ -120,9 +146,6 @@ class GeomagneticNet:
             "By_GSM",
             "Bx_GSE",
             "Kp",
-            "f10.7",
-            "AL",
-            "AU",
             "T_proton",
             "Np_density",
             "V_plasma",
@@ -178,10 +201,10 @@ class GeomagneticNet:
         ae_errors = []
 
         with torch.no_grad():
-            self.__model.eval()
+            self._model.eval()
             for x, y in dataloader:
                 x, y = x.to(self.__device), y.to(self.__device)
-                dst_pred, ae_pred, attention_weights = self.__model(x)
+                dst_pred, ae_pred, attention_weights = self._model(x)
                 preds = np.stack(
                     [dst_pred.cpu().numpy().flatten(), ae_pred.cpu().numpy().flatten()],
                     axis=1,
@@ -248,38 +271,379 @@ class GeomagneticNet:
         return GeomagnesisResult(**result_data)
 
     def predict_next(self, omni2file_path: str):
-        self.__data_validator.is_omni_file(omni2file_path)
-        omni2file_path = Path(omni2file_path)  # type: ignore
-        omni2_df = pd.read_csv(omni2file_path, header=None, sep="\\s+")
-        assert len(omni2_df.columns) == len(self.__omni2full_columns), (
-            f"omni2 файл должен содержать {int(len(self.__omni2full_columns))} колонок, пример: https://spdf.gsfc.nasa.gov/pub/data/omni/low_res_omni/omni2_2025.dat"
+        df = make_dataset(omni2file_path, one_file=True)
+        df = df[self.__required_columns]
+        return df.copy()
+
+        # self.__data_validator.is_omni_file(omni2file_path)
+        # omni2file_path = Path(omni2file_path)  # type: ignore
+        # omni2_df = pd.read_csv(omni2file_path, header=None, sep="\\s+")
+        # assert len(omni2_df.columns) == len(self.__omni2full_columns), (
+        #     f"omni2 файл должен содержать {int(len(self.__omni2full_columns))} колонок, пример: https://spdf.gsfc.nasa.gov/pub/data/omni/low_res_omni/omni2_2025.dat"
+        # )
+        # omni2_df.columns = self.__omni2full_columns
+        # omni2_df = self.__preprocessing(
+        #     geomagnetic_df=omni2_df,
+        #     get_df_only=True,
+        #     batch_size=-1,
+        # )
+        # complete_rows = omni2_df.notna().all(axis=1)  # type: ignore
+        # last_notna_index = int(omni2_df[complete_rows].index[-1])  # type: ignore
+        # print(
+        #     f"Последний найденный индекс без последующих пропусков в файле: {last_notna_index}, {int(last_notna_index / 24)}-й день с начала года"
+        # )
+        # geomagnetic_df = omni2_df.iloc[: last_notna_index + 1]  # type: ignore
+        # if len(geomagnetic_df) < self.__X_window_size:
+        #     raise Exception("TODO")
+        # last_batch = geomagnetic_df.tail(self.__X_window_size)
+        # X_scaled = self.__X_scaler.transform(last_batch.drop(columns=["AE"]))
+        # X = torch.FloatTensor(X_scaled).to(self.__device)
+        # dst_pred, ae_pred, (dst_attention, ae_attention) = self._model(X.unsqueeze(0))
+        # preds = np.stack(
+        #     [
+        #         dst_pred.cpu().detach().numpy().flatten(),
+        #         ae_pred.cpu().detach().numpy().flatten(),
+        #     ],
+        #     axis=1,
+        # )
+        # preds = self.__y_scaler.inverse_transform(preds)
+        # dst_preds = preds[:, 0]
+        # ae_preds = preds[:, 1]
+        # return (dst_preds, ae_preds, dst_attention, ae_attention), last_batch
+
+    def __inference_on_loader_pipeline(
+        self,
+        model,
+        loader,
+        y_scaler,
+        device="cuda",
+        visualize: bool = False,
+        title_prefix="",
+        until=-1,
+    ):
+        dst_labels = []
+        dst_preds = []
+        ae_labels = []
+        ae_preds = []
+
+        with torch.no_grad():
+            model.eval()
+            for x, y in loader:
+                x, y = x.to(device), y.to(device)
+                dst_pred, ae_pred, _ = model(x)
+
+                dst_pred = dst_pred.squeeze(1)
+                ae_pred = ae_pred.squeeze(1)
+
+                dst_true = y[:, 0, 0]  # [batch]
+                ae_true = y[:, 0, 1]  # [batch]
+
+                dst_preds.extend(dst_pred.cpu().numpy())
+                ae_preds.extend(ae_pred.cpu().numpy())
+                dst_labels.extend(dst_true.cpu().numpy())
+                ae_labels.extend(ae_true.cpu().numpy())
+
+        dst_preds = np.array(dst_preds)
+        ae_preds = np.array(ae_preds)
+        dst_labels = np.array(dst_labels)
+        ae_labels = np.array(ae_labels)
+
+        dst_pred_scaled = dst_preds.reshape(-1, 1)
+        dst_true_scaled = dst_labels.reshape(-1, 1)
+        ae_pred_scaled = ae_preds.reshape(-1, 1)
+        ae_true_scaled = ae_labels.reshape(-1, 1)
+
+        preds_combined = np.hstack([dst_pred_scaled, ae_pred_scaled])
+        true_combined = np.hstack([dst_true_scaled, ae_true_scaled])
+
+        preds_original = y_scaler.inverse_transform(preds_combined)
+        true_original = y_scaler.inverse_transform(true_combined)
+
+        dst_preds_orig = preds_original[:, 0][:until]
+        ae_preds_orig = preds_original[:, 1][:until]
+        dst_labels_orig = true_original[:, 0][:until]
+        ae_labels_orig = true_original[:, 1][:until]
+
+        # Метрики
+        dst_rmse = np.sqrt(np.mean((dst_labels_orig - dst_preds_orig) ** 2))
+        dst_mae = np.mean(np.abs(dst_labels_orig - dst_preds_orig))
+        ae_rmse = np.sqrt(np.mean((ae_labels_orig - ae_preds_orig) ** 2))
+        ae_mae = np.mean(np.abs(ae_labels_orig - ae_preds_orig))
+        if visualize:
+            _, axes = plt.subplots(1, 2, figsize=(16, 6))
+
+            axes[0].plot(
+                dst_labels_orig,
+                label="Истинные значения",
+                color="#1f77b4",
+                linewidth=1.5,
+            )
+            axes[0].plot(
+                dst_preds_orig, label="Прогноз", color="#ff7f0e", linewidth=1.5
+            )
+            axes[0].set_title(f"{title_prefix} Dst", fontsize=12)
+            axes[0].set_xlabel("Временные шаги (часы)")
+            axes[0].set_ylabel("Dst, nT")
+            axes[0].legend()
+            axes[0].grid(True, alpha=0.3)
+            axes[0].text(
+                0.02,
+                0.95,
+                f"RMSE = {dst_rmse:.2f} nT\nMAE = {dst_mae:.2f} nT",
+                transform=axes[0].transAxes,
+                fontsize=10,
+                verticalalignment="top",
+                bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
+            )
+
+            axes[1].plot(
+                ae_labels_orig,
+                label="Истинные значения",
+                color="#1f77b4",
+                linewidth=1.5,
+            )
+            axes[1].plot(ae_preds_orig, label="Прогноз", color="#ff7f0e", linewidth=1.5)
+            axes[1].set_title(f"{title_prefix} AE", fontsize=12)
+            axes[1].set_xlabel("Временные шаги (часы)")
+            axes[1].set_ylabel("AE, nT")
+            axes[1].legend()
+            axes[1].grid(True, alpha=0.3)
+            axes[1].text(
+                0.02,
+                0.95,
+                f"RMSE = {ae_rmse:.2f} nT\nMAE = {ae_mae:.2f} nT",
+                transform=axes[1].transAxes,
+                fontsize=10,
+                verticalalignment="top",
+                bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
+            )
+
+            plt.suptitle(f"{title_prefix} Прогноз геомагнитных индексов", fontsize=14)
+            plt.tight_layout()
+            plt.show()
+
+            print(f"{title_prefix} Результаты прогноза")
+            print(f"Dst: RMSE = {dst_rmse:.2f} nT, MAE = {dst_mae:.2f} nT")
+            print(f"AE:  RMSE = {ae_rmse:.2f} nT, MAE = {ae_mae:.2f} nT")
+
+        return {
+            "dst_rmse": dst_rmse,
+            "dst_mae": dst_mae,
+            "ae_rmse": ae_rmse,
+            "ae_mae": ae_mae,
+            "dst_preds": dst_preds_orig,
+            "dst_labels": dst_labels_orig,
+            "ae_preds": ae_preds_orig,
+            "ae_labels": ae_labels_orig,
+        }
+
+    def __draw_dst_storm_prediction(
+        self,
+        inference_on_loader_result,
+        storm_threshold,
+        padding,
+        min_duration,
+        min_depth,
+        above=False,
+    ):
+        def find_storm_periods(
+            labels, threshold, padding, min_duration, min_depth, above=False
+        ):
+            if above:
+                mask = labels > threshold
+            else:
+                mask = labels < threshold
+
+            periods = []
+            i = 0
+            while i < len(mask):
+                if mask[i]:
+                    start = i
+                    while i < len(mask) and mask[i]:
+                        i += 1
+                    end = i - 1
+
+                    duration = end - start + 1
+                    if above:
+                        max_val = np.max(labels[start : end + 1])
+                        depth = max_val - threshold
+                    else:
+                        min_val = np.min(labels[start : end + 1])
+                        depth = threshold - min_val  # Глубина для Dst
+
+                    if duration >= min_duration and depth >= min_depth:
+                        start_pad = max(0, start - padding)
+                        periods.append((start_pad, end))
+                else:
+                    i += 1
+            return periods
+
+        labels_full = np.array(inference_on_loader_result["dst_labels"])
+        dst_periods = find_storm_periods(
+            labels_full,
+            threshold=storm_threshold,
+            padding=padding,
+            min_duration=min_duration,
+            min_depth=min_depth,
+            above=above,  # Используем параметр функции
         )
-        omni2_df.columns = self.__omni2full_columns
-        omni2_df = self.__preprocessing(
-            geomagnetic_df=omni2_df,
-            get_df_only=True,
-            batch_size=-1,
+
+        f1s = []
+        for period in dst_periods:
+            from_ = period[0]
+            to = period[1]
+
+            labels = np.array(inference_on_loader_result["dst_labels"][from_:to])
+            preds = np.array(inference_on_loader_result["dst_preds"][from_:to])
+            indices = np.arange(from_, to)
+
+            # Для Dst: буря когда значения НИЖЕ порога
+            storm_mask = labels < storm_threshold
+            pred_storm_mask = preds < storm_threshold
+
+            plt.figure(figsize=(18, 5))
+            plt.plot(
+                indices,
+                labels,
+                label="Истинные значения",
+                color="#1f77b4",
+                linewidth=1.5,
+            )
+            plt.plot(indices, preds, label="Прогноз", color="#ff7f0e", linewidth=1.5)
+
+            # Фактические бури
+            storm_indices = indices[storm_mask]
+            storm_values = labels[storm_mask]
+            plt.scatter(
+                storm_indices,
+                storm_values,
+                color="red",
+                s=50,
+                zorder=5,
+                label=f"Фактическая буря (Dst < {storm_threshold} nT)",
+                alpha=0.7,
+            )
+
+            # Предсказанные бури
+            pred_storm_indices = indices[pred_storm_mask]
+            pred_storm_values = preds[pred_storm_mask]
+            plt.scatter(
+                pred_storm_indices,
+                pred_storm_values,
+                color="green",
+                s=50,
+                zorder=5,
+                marker="s",
+                label=f"Модель предсказала бурю (Dst < {storm_threshold} nT)",
+                alpha=0.7,
+            )
+
+            plt.axhline(
+                y=storm_threshold,
+                color="red",
+                linestyle="--",
+                alpha=0.5,
+                label=f"Порог {storm_threshold} nT",
+            )
+
+            # Закрашиваем области бурь
+            for i in range(len(storm_mask)):
+                if storm_mask[i]:
+                    plt.axvspan(
+                        indices[i] - 0.5,
+                        indices[i] + 0.5,
+                        alpha=0.15,
+                        color="red",
+                        zorder=0,
+                    )
+
+            plt.grid(True, alpha=0.3)
+            plt.legend(loc="upper left")
+            plt.title(
+                f"Dst: прогноз vs факт с выделением бурь (Dst < {storm_threshold} nT)"
+            )
+            plt.xlabel("Временные шаги")
+            plt.ylabel("Dst, nT")
+            plt.tight_layout()
+            plt.show()
+
+            # Статистика
+            print(f"=== Статистика по бурям (Dst < {storm_threshold} nT) ===")
+            print(f"Всего моментов с бурей по факту: {np.sum(storm_mask)}")
+            print(
+                f"Всего моментов, когда модель предсказала бурю: {np.sum(pred_storm_mask)}"
+            )
+
+            true_positives = np.sum(storm_mask & pred_storm_mask)
+            false_positives = np.sum((~storm_mask) & pred_storm_mask)
+            false_negatives = np.sum(storm_mask & (~pred_storm_mask))
+
+            precision = (
+                true_positives / (true_positives + false_positives)
+                if (true_positives + false_positives) > 0
+                else 0
+            )
+            recall = (
+                true_positives / (true_positives + false_negatives)
+                if (true_positives + false_negatives) > 0
+                else 0
+            )
+
+            print(f"Precision: {precision:.3f}")
+            print(f"Recall: {recall:.3f}")
+
+            if precision + recall > 0:
+                f1 = 2 * precision * recall / (precision + recall)
+                print(f"F1: {f1:.3f}")
+                f1s.append(f1)
+        if f1s:
+            print(f"\nСредний F1 по всем бурям: {sum(f1s) / len(f1s):.3f}")
+        else:
+            print("\nНе найдено ни одного периода бури!")
+        return f1s
+
+    def __call__(
+        self,
+        dataset: pd.Dataframe,
+        visualize,
+        prefix,
+        until=-1,
+        storm_threshold=-90,
+    ):  # type: ignore
+        dataset = dataset[self.__required_columns]
+        X_test, y_test = (
+            dataset.drop(columns=["datetime", "Dst"]),
+            dataset[["Dst", "AE"]],
         )
-        complete_rows = omni2_df.notna().all(axis=1)  # type: ignore
-        last_notna_index = int(omni2_df[complete_rows].index[-1])  # type: ignore
-        print(
-            f"Последний найденный индекс без последующих пропусков в файле: {last_notna_index}, {int(last_notna_index / 24)}-й день с начала года"
+
+        X_test_scaled = self.__X_scaler.transform(X_test)
+        y_test_scaled = self.__y_scaler.transform(y_test)
+
+        test_dataset = GeomagneticDataset(
+            X=X_test_scaled,
+            y=y_test_scaled,
+            X_window_size=self.__X_window_size,
+            y_window_size=self.__y_window_size,
+            stride=1,
         )
-        geomagnetic_df = omni2_df.iloc[:last_notna_index]  # type: ignore
-        if len(geomagnetic_df) < self.__X_window_size:
-            raise Exception("TODO")
-        last_batch = geomagnetic_df.tail(self.__X_window_size)
-        X_scaled = self.__X_scaler.transform(last_batch)
-        X = torch.FloatTensor(X_scaled).to(self.__device)
-        dst_pred, ae_pred, (dst_attention, ae_attention) = self.__model(X.unsqueeze(0))
-        preds = np.stack(
-            [
-                dst_pred.cpu().detach().numpy().flatten(),
-                ae_pred.cpu().detach().numpy().flatten(),
-            ],
-            axis=1,
+        val_loader = torch.utils.data.DataLoader(
+            test_dataset, batch_size=self.__batch_size, shuffle=False
         )
-        preds = self.__y_scaler.inverse_transform(preds)
-        dst_preds = preds[:, 0]
-        ae_preds = preds[:, 1]
-        return (dst_preds, ae_preds, dst_attention, ae_attention), last_batch
+        result = self.__inference_on_loader_pipeline(
+            model=self._model,
+            loader=val_loader,
+            y_scaler=self.__y_scaler,
+            device=self.__device,
+            visualize=visualize,
+            title_prefix=prefix,
+            until=until,
+        )
+        self.__draw_dst_storm_prediction(
+            result,
+            storm_threshold=storm_threshold,
+            padding=5,
+            min_duration=5,
+            min_depth=5,
+            above=False,
+        )
+        return result
