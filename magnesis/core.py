@@ -633,7 +633,7 @@ class GeomagneticNet:
 
     def __call__(
         self,
-        dataset: pd.Dataframe,
+        dataset: pd.DataFrame,
         visualize,
         prefix,
         until=-1,
