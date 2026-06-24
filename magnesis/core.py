@@ -9,11 +9,11 @@ import scipy.stats as stats
 import torch
 from torch.utils.data import DataLoader
 
-from .constants import FILL_VALIES
+from .constants import FILL_VALUES
 from .dataset import GeomagneticDataset
 from .model import GeomagneticModel
 from .schemas import GeomagnesisResult
-from .utils import make_dataset
+from .utils import make_dataset, make_omni2df, make_time_features
 from .validator import GNDataValidatorImpl
 
 deviceType: TypeAlias = Literal["cuda", "cpu"]
@@ -137,179 +137,208 @@ class GeomagneticNet:
             "Mach_num",
         ]
 
-    def __preprocessing(
-        self, geomagnetic_df: pd.DataFrame, batch_size: int, get_df_only: bool = False
-    ) -> DataLoader | pd.DataFrame:
-        dataset = geomagnetic_df.copy()
-        required_columns = [
-            "Bz_GSM",
-            "By_GSM",
-            "Bx_GSE",
-            "Kp",
-            "T_proton",
-            "Np_density",
-            "V_plasma",
-            "V_Long_GSE",
-            "V_Lat_GSE",
-            "Dst",
-            "AE",
-        ]
+    # def __preprocessing(
+    #     self, geomagnetic_df: pd.DataFrame, batch_size: int, get_df_only: bool = False
+    # ) -> DataLoader | pd.DataFrame:
+    #     dataset = geomagnetic_df.copy()
+    #     required_columns = [
+    #         "Bz_GSM",
+    #         "By_GSM",
+    #         "Bx_GSE",
+    #         "Kp",
+    #         "T_proton",
+    #         "Np_density",
+    #         "V_plasma",
+    #         "V_Long_GSE",
+    #         "V_Lat_GSE",
+    #         "Dst",
+    #         "AE",
+    #     ]
 
-        missing_columns = [
-            col for col in required_columns if col not in dataset.columns
-        ]
-        if missing_columns:
+    #     missing_columns = [
+    #         col for col in required_columns if col not in dataset.columns
+    #     ]
+    #     if missing_columns:
+    #         raise ValueError(
+    #             f"В датасете отсутствуют обязательные колонки: {', '.join(missing_columns)}. "
+    #             f"Ожидаемые колонки: {', '.join(required_columns)}"
+    #         )
+
+    #     dataset = dataset[required_columns]
+
+    #     for col in dataset.columns:
+    #         dataset[col] = dataset[col].replace(FILL_VALIES[col], np.nan)
+    #     features = [i for i in dataset.columns if i != "datetime"]
+    #     # Nan interpolations
+    #     if get_df_only:
+    #         return dataset[features]
+
+    #     dataset[features] = dataset[features].interpolate(method="pchip")
+    #     # Sampling
+    #     X, y = dataset[required_columns], dataset[["Dst", "AE"]]
+    #     X_scaled = self.__X_scaler.transform(X)
+    #     y_scaled = self.__y_scaler.transform(y)
+    #     torch_dataset = GeomagneticDataset(
+    #         X=X_scaled,
+    #         y=y_scaled,
+    #         X_window_size=self.__X_window_size,
+    #         y_window_size=6,
+    #         stride=6,
+    #     )
+    #     torch_dataloader = DataLoader(
+    #         torch_dataset,
+    #         batch_size=batch_size,
+    #         shuffle=False,
+    #     )
+    #     return torch_dataloader
+
+    # def __inference_and_postprocess(self, dataloader: DataLoader, alpha: float):
+    #     dst_labels = []
+    #     ae_labels = []
+    #     dst_preds = []
+    #     ae_preds = []
+    #     dst_errors = []
+    #     ae_errors = []
+
+    #     with torch.no_grad():
+    #         self._model.eval()
+    #         for x, y in dataloader:
+    #             x, y = x.to(self.__device), y.to(self.__device)
+    #             dst_pred, ae_pred, attention_weights = self._model(x)
+    #             preds = np.stack(
+    #                 [dst_pred.cpu().numpy().flatten(), ae_pred.cpu().numpy().flatten()],
+    #                 axis=1,
+    #             )
+    #             labels = np.stack(
+    #                 [
+    #                     y[:, :, 0].cpu().numpy().flatten(),
+    #                     y[:, :, 1].cpu().numpy().flatten(),
+    #                 ],
+    #                 axis=1,
+    #             )
+    #             preds = self.__y_scaler.inverse_transform(preds)
+    #             labels = self.__y_scaler.inverse_transform(labels)
+
+    #             dst_preds.extend(preds[:, 0])
+    #             ae_preds.extend(preds[:, 1])
+    #             dst_labels.extend(labels[:, 0])
+    #             ae_labels.extend(labels[:, 1])
+    #             dst_errors.extend(labels[:, 0] - preds[:, 0])
+    #             ae_errors.extend(labels[:, 1] - preds[:, 1])
+
+    #     dst_preds = np.array(dst_preds)
+    #     ae_preds = np.array(ae_preds)
+    #     dst_labels = np.array(dst_labels)
+    #     ae_labels = np.array(ae_labels)
+    #     dst_errors = np.array(dst_errors)
+    #     ae_errors = np.array(ae_errors)
+
+    #     dst_std = np.std(dst_errors)
+    #     ae_std = np.std(ae_errors)
+    #     dst_mean = np.mean(dst_errors)
+    #     ae_mean = np.mean(ae_errors)
+    #     # данные для построения статистического доверительного интервала
+    #     z = stats.norm.ppf((1 + alpha) / 2)
+
+    #     dst_ci_lower = dst_preds + (dst_mean - z * dst_std)
+    #     dst_ci_upper = dst_preds + (dst_mean + z * dst_std)
+    #     ae_ci_lower = ae_preds + (ae_mean - z * ae_std)
+    #     ae_ci_upper = ae_preds + (ae_mean + z * ae_std)
+
+    #     return {
+    #         "dst_ci_lower": dst_ci_lower,
+    #         "dst_ci_upper": dst_ci_upper,
+    #         "ae_ci_lower": ae_ci_lower,
+    #         "ae_ci_upper": ae_ci_upper,
+    #         "dst_labels": dst_labels,
+    #         "dst_preds": dst_preds,
+    #         "ae_labels": ae_labels,
+    #         "ae_preds": ae_preds,
+    #         "dst_rmse": np.sqrt(np.mean(dst_errors**2)),
+    #         "ae_rmse": np.sqrt(np.mean(ae_errors**2)),
+    #         "dst_std": dst_std,
+    #         "ae_std": ae_std,
+    #     }
+
+    # def validate(
+    #     self,
+    #     geomagnetic_df: pd.DataFrame,
+    #     batch_size: int,
+    # ) -> GeomagnesisResult:
+    #     self.__data_validator.validate(geomagnetic_df)
+    #     dataloader = self.__preprocessing(geomagnetic_df, batch_size, get_df_only=False)
+    #     result_data = self.__inference_and_postprocess(dataloader, alpha=0.95)  # type: ignore
+    #     return GeomagnesisResult(**result_data)
+
+    def predict_next(self, omni2file_path: str):
+        self.__data_validator.is_omni_file(omni2file_path)
+
+        dataset = make_omni2df(omni2file_path, one_file=True)
+        dataset = make_time_features(dataset)
+        dataset = dataset[self.__required_columns]
+
+        complete_rows = dataset.notna().all(axis=1)
+        last_notna_index = int(dataset[complete_rows].index[-1])
+        print(
+            f"Последний найденный индекс без пропусков: {last_notna_index}, "
+            f"{int(last_notna_index / 24)}-й день с начала года"
+        )
+        geomagnetic_df = dataset.iloc[: last_notna_index + 1]
+
+        min_required = self.__X_window_size + 5  # для t+1 нужно на 5 часов больше
+        if len(geomagnetic_df) < min_required:
             raise ValueError(
-                f"В датасете отсутствуют обязательные колонки: {', '.join(missing_columns)}. "
-                f"Ожидаемые колонки: {', '.join(required_columns)}"
+                f"Недостаточно данных. Нужно минимум {min_required} строк, "
+                f"получено {len(geomagnetic_df)}"
             )
 
-        dataset = dataset[required_columns]
+        feature_columns = [
+            col for col in geomagnetic_df.columns if col not in ["datetime", "Dst"]
+        ]
 
-        for col in dataset.columns:
-            dataset[col] = dataset[col].replace(FILL_VALIES[col], np.nan)
-        features = [i for i in dataset.columns if i != "datetime"]
-        # Nan interpolations
-        if get_df_only:
-            return dataset[features]
-
-        dataset[features] = dataset[features].interpolate(method="pchip")
-        # Sampling
-        X, y = dataset[required_columns], dataset[["Dst", "AE"]]
-        X_scaled = self.__X_scaler.transform(X)
-        y_scaled = self.__y_scaler.transform(y)
-        torch_dataset = GeomagneticDataset(
-            X=X_scaled,
-            y=y_scaled,
-            X_window_size=self.__X_window_size,
-            y_window_size=6,
-            stride=6,
-        )
-        torch_dataloader = DataLoader(
-            torch_dataset,
-            batch_size=batch_size,
-            shuffle=False,
-        )
-        return torch_dataloader
-
-    def __inference_and_postprocess(self, dataloader: DataLoader, alpha: float):
-        dst_labels = []
-        ae_labels = []
-        dst_preds = []
-        ae_preds = []
-        dst_errors = []
-        ae_errors = []
+        dst_predictions = []
+        ae_predictions = []
 
         with torch.no_grad():
             self._model.eval()
-            for x, y in dataloader:
-                x, y = x.to(self.__device), y.to(self.__device)
-                dst_pred, ae_pred, attention_weights = self._model(x)
-                preds = np.stack(
-                    [dst_pred.cpu().numpy().flatten(), ae_pred.cpu().numpy().flatten()],
-                    axis=1,
-                )
-                labels = np.stack(
-                    [
-                        y[:, :, 0].cpu().numpy().flatten(),
-                        y[:, :, 1].cpu().numpy().flatten(),
-                    ],
-                    axis=1,
-                )
-                preds = self.__y_scaler.inverse_transform(preds)
-                labels = self.__y_scaler.inverse_transform(labels)
 
-                dst_preds.extend(preds[:, 0])
-                ae_preds.extend(preds[:, 1])
-                dst_labels.extend(labels[:, 0])
-                ae_labels.extend(labels[:, 1])
-                dst_errors.extend(labels[:, 0] - preds[:, 0])
-                ae_errors.extend(labels[:, 1] - preds[:, 1])
+            # 6 прогнозов: для t+1, t+2, ..., t+6
+            for i in range(6):
+                shift = 5 - i  # для i=0 (t+1): shift=5, для i=5 (t+6): shift=0
+                end_idx = len(geomagnetic_df) - shift  # конец окна
+                start_idx = end_idx - self.__X_window_size
 
-        dst_preds = np.array(dst_preds)
-        ae_preds = np.array(ae_preds)
-        dst_labels = np.array(dst_labels)
-        ae_labels = np.array(ae_labels)
-        dst_errors = np.array(dst_errors)
-        ae_errors = np.array(ae_errors)
+                if start_idx < 0:
+                    raise ValueError(f"Недостаточно данных для прогноза на шаг {i + 1}")
 
-        dst_std = np.std(dst_errors)
-        ae_std = np.std(ae_errors)
-        dst_mean = np.mean(dst_errors)
-        ae_mean = np.mean(ae_errors)
-        # данные для построения статистического доверительного интервала
-        z = stats.norm.ppf((1 + alpha) / 2)
+                window_data = geomagnetic_df.iloc[start_idx:end_idx]
+                X_window = window_data[feature_columns].values
+                X_scaled = self.__X_scaler.transform(X_window)
+                X_tensor = torch.FloatTensor(X_scaled).unsqueeze(0).to(self.__device)
 
-        dst_ci_lower = dst_preds + (dst_mean - z * dst_std)
-        dst_ci_upper = dst_preds + (dst_mean + z * dst_std)
-        ae_ci_lower = ae_preds + (ae_mean - z * ae_std)
-        ae_ci_upper = ae_preds + (ae_mean + z * ae_std)
+                dst_pred, ae_pred, _ = self._model(X_tensor)
+                dst_pred_np = dst_pred.cpu().detach().numpy().flatten()
+                ae_pred_np = ae_pred.cpu().detach().numpy().flatten()
+
+                preds_combined = np.stack([dst_pred_np, ae_pred_np], axis=1)
+                preds_original = self.__y_scaler.inverse_transform(preds_combined)
+                dst_predictions.append(preds_original[0, 0])
+                ae_predictions.append(preds_original[0, 1])
+
+        print(f"ПРОГНОЗ НА СЛЕДУЮЩИЕ {self.__y_window_size} ЧАСОВ:")
+        for i in range(self.__y_window_size):
+            print(
+                f"t+{i + 1}: Dst = {dst_predictions[i]:.2f} nT, AE = {ae_predictions[i]:.2f} nT"
+            )
 
         return {
-            "dst_ci_lower": dst_ci_lower,
-            "dst_ci_upper": dst_ci_upper,
-            "ae_ci_lower": ae_ci_lower,
-            "ae_ci_upper": ae_ci_upper,
-            "dst_labels": dst_labels,
-            "dst_preds": dst_preds,
-            "ae_labels": ae_labels,
-            "ae_preds": ae_preds,
-            "dst_rmse": np.sqrt(np.mean(dst_errors**2)),
-            "ae_rmse": np.sqrt(np.mean(ae_errors**2)),
-            "dst_std": dst_std,
-            "ae_std": ae_std,
+            "dst_predictions": np.array(dst_predictions),
+            "ae_predictions": np.array(ae_predictions),
+            "timestamps": [f"t+{i + 1}" for i in range(6)],
+            "history_dst": geomagnetic_df["Dst"].values[-self.__X_window_size * 2 :],
+            "history_ae": geomagnetic_df["AE"].values[-self.__X_window_size * 2 :],
+            "history_timestamps": list(range(-self.__X_window_size * 2, 0)),
         }
-
-    def validate(
-        self,
-        geomagnetic_df: pd.DataFrame,
-        batch_size: int,
-    ) -> GeomagnesisResult:
-        self.__data_validator.validate(geomagnetic_df)
-        dataloader = self.__preprocessing(geomagnetic_df, batch_size, get_df_only=False)
-        result_data = self.__inference_and_postprocess(dataloader, alpha=0.95)  # type: ignore
-        return GeomagnesisResult(**result_data)
-
-    def predict_next(self, omni2file_path: str):
-        df = make_dataset(omni2file_path, one_file=True)
-        df = df[self.__required_columns]
-        return df.copy()
-
-        # self.__data_validator.is_omni_file(omni2file_path)
-        # omni2file_path = Path(omni2file_path)  # type: ignore
-        # omni2_df = pd.read_csv(omni2file_path, header=None, sep="\\s+")
-        # assert len(omni2_df.columns) == len(self.__omni2full_columns), (
-        #     f"omni2 файл должен содержать {int(len(self.__omni2full_columns))} колонок, пример: https://spdf.gsfc.nasa.gov/pub/data/omni/low_res_omni/omni2_2025.dat"
-        # )
-        # omni2_df.columns = self.__omni2full_columns
-        # omni2_df = self.__preprocessing(
-        #     geomagnetic_df=omni2_df,
-        #     get_df_only=True,
-        #     batch_size=-1,
-        # )
-        # complete_rows = omni2_df.notna().all(axis=1)  # type: ignore
-        # last_notna_index = int(omni2_df[complete_rows].index[-1])  # type: ignore
-        # print(
-        #     f"Последний найденный индекс без последующих пропусков в файле: {last_notna_index}, {int(last_notna_index / 24)}-й день с начала года"
-        # )
-        # geomagnetic_df = omni2_df.iloc[: last_notna_index + 1]  # type: ignore
-        # if len(geomagnetic_df) < self.__X_window_size:
-        #     raise Exception("TODO")
-        # last_batch = geomagnetic_df.tail(self.__X_window_size)
-        # X_scaled = self.__X_scaler.transform(last_batch.drop(columns=["AE"]))
-        # X = torch.FloatTensor(X_scaled).to(self.__device)
-        # dst_pred, ae_pred, (dst_attention, ae_attention) = self._model(X.unsqueeze(0))
-        # preds = np.stack(
-        #     [
-        #         dst_pred.cpu().detach().numpy().flatten(),
-        #         ae_pred.cpu().detach().numpy().flatten(),
-        #     ],
-        #     axis=1,
-        # )
-        # preds = self.__y_scaler.inverse_transform(preds)
-        # dst_preds = preds[:, 0]
-        # ae_preds = preds[:, 1]
-        # return (dst_preds, ae_preds, dst_attention, ae_attention), last_batch
 
     def __inference_on_loader_pipeline(
         self,

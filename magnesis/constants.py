@@ -1,4 +1,4 @@
-FILL_VALIES = {
+FILL_VALUES = {
     "Bz_GSM": 999.9,
     "By_GSM": 999.9,
     "Bx_GSE": 999.9,

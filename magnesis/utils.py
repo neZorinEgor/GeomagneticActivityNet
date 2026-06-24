@@ -8,6 +8,8 @@ import pandas as pd
 import torch
 from scipy.special import inv_boxcox
 
+from .constants import FILL_VALUES
+
 
 def visualize_model(
     model,
@@ -177,16 +179,33 @@ def visualize_model(
     }
 
 
-def make_dataset(omni2_dir: Path, one_file: bool = False):
-    file_pattern = os.path.join(omni2_dir, "omni2_*.dat*")
-    file_list = glob(file_pattern)
+def make_omni2df(omni2_path: Path | str, one_file: bool = False):
     if one_file:
-        file_list = [omni2_dir]
+        file_list = [str(omni2_path)]
+    else:
+        omni2_path = Path(omni2_path)
+        file_pattern = os.path.join(str(omni2_path), "omni2_*.dat*")
+        file_list = glob(file_pattern)
+
+        if not file_list:
+            raise ValueError(f"Не найдено файлов по шаблону: {file_pattern}")
+
     file_list.sort()
     df_list = []
 
     for file in file_list:
-        df_temp = pd.read_csv(file, header=None, sep="\\s+")
+        try:
+            df_temp = pd.read_csv(file, header=None, sep="\\s+")
+        except Exception as e:
+            print(f"Ошибка при чтении файла {file}: {e}")
+            continue
+
+        if len(df_temp.columns) != 55:
+            print(
+                f"Предупреждение: файл {file} содержит {len(df_temp.columns)} колонок, ожидается 55"
+            )
+            continue
+
         df_temp.columns = [
             "Year",
             "Decimal Day",
@@ -247,74 +266,84 @@ def make_dataset(omni2_dir: Path, one_file: bool = False):
 
         df_list.append(df_temp)
 
+    if not df_list:
+        raise ValueError("Не удалось загрузить ни одного файла")
+
     full_dataset = pd.concat(df_list, ignore_index=True)
+
     columns = [
-        # features
         "Year",
         "Decimal Day",
         "Hour",
-        "Bz_GSM",  # IMF Bz
-        "By_GSM",  # IMF By
-        "Bx_GSE",  # IMF Bx
-        "Kp",  # Kp
-        "f10.7",  # F10.7
-        "AL",  # AL
-        "AU",  # AU
-        "T_proton",  # Proton temperature
-        "Np_density",  # Proton density
-        "V_plasma",  # Bulk speed
-        "V_Long_GSE",  # Bulk flow longitude
-        "V_Lat_GSE",  # Bulk flow latitude
-        # labels
-        "Dst",  # Quick Look Dst-index
-        "AE",  # Quick Look AE
+        "Bz_GSM",
+        "By_GSM",
+        "Bx_GSE",
+        "Kp",
+        "f10.7",
+        "AL",
+        "AU",
+        "T_proton",
+        "Np_density",
+        "V_plasma",
+        "V_Long_GSE",
+        "V_Lat_GSE",
+        "Dst",
+        "AE",
     ]
     dataset = full_dataset[columns]
-    dataset["datetime"] = pd.to_datetime(
-        dataset["Year"].astype(str)
-        + "-"
-        + dataset["Decimal Day"].astype(str)
-        + " "
-        + dataset["Hour"].astype(str),
-        format="%Y-%j %H",
-    )
+    try:
+        dataset["datetime"] = pd.to_datetime(
+            dataset["Year"].astype(str)
+            + "-"
+            + dataset["Decimal Day"].astype(str)
+            + " "
+            + dataset["Hour"].astype(str),
+            format="%Y-%j %H",
+        )
+    except Exception as e:
+        print(f"Ошибка при создании datetime: {e}")
+        # Альтернативный способ
+        dataset["datetime"] = pd.to_datetime(
+            dataset["Year"].astype(str) + "-01-01", format="%Y-%m-%d"
+        ) + pd.to_timedelta(
+            (dataset["Decimal Day"] - 1) * 24 + dataset["Hour"], unit="h"
+        )
+
     dataset = dataset.drop(columns=["Year", "Decimal Day", "Hour"])
+
     cols = ["datetime"] + [col for col in dataset.columns if col != "datetime"]
     dataset = dataset[cols]
-
-    fill_values = {
-        "Bz_GSM": 999.9,
-        "By_GSM": 999.9,
-        "Bx_GSE": 999.9,
-        "Kp": 99,
-        "f10.7": 999.9,
-        "AL": 99999,
-        "AU": 99999,
-        "T_proton": 9999999.0,
-        "Np_density": 999.9,
-        "V_plasma": 9999.0,
-        "V_Long_GSE": 999.9,
-        "V_Lat_GSE": 999.9,
-        "Dst": 99999,
-        "AE": 9999,
-    }
     for col in dataset.drop(columns=["datetime"]).columns:
-        dataset[col] = dataset[col].replace(fill_values[col], np.nan)
+        if col in FILL_VALUES:
+            dataset[col] = dataset[col].replace(FILL_VALUES[col], np.nan)
+    return dataset.copy()
+
+
+def make_time_features(omni2df):
+    omni2df["hour"] = omni2df["datetime"].dt.hour
+    omni2df["day_of_year"] = omni2df["datetime"].dt.dayofyear
+    omni2df["day_of_week"] = omni2df["datetime"].dt.dayofweek
+    omni2df["month"] = omni2df["datetime"].dt.month
+
+    omni2df["hour_sin"] = np.sin(2 * np.pi * omni2df["hour"] / 24)
+    omni2df["hour_cos"] = np.cos(2 * np.pi * omni2df["hour"] / 24)
+    omni2df["day_sin"] = np.sin(2 * np.pi * omni2df["day_of_year"] / 365.25)
+    omni2df["day_cos"] = np.cos(2 * np.pi * omni2df["day_of_year"] / 365.25)
+    omni2df["week_sin"] = np.sin(2 * np.pi * omni2df["day_of_week"] / 7)
+    omni2df["week_cos"] = np.cos(2 * np.pi * omni2df["day_of_week"] / 7)
+
+    omni2df = omni2df.drop(columns=["hour", "day_of_year", "day_of_week", "month"])
+    return omni2df.copy()
+
+
+def make_dataset(omni2_path: Path | str, one_file: bool = False):
+    dataset = make_omni2df(omni2_path)
 
     clean_dataset = dataset.copy()
     features = [i for i in clean_dataset.columns if i != "datetime"]
     clean_dataset[features] = clean_dataset[features].interpolate(method="pchip")
+
     df = clean_dataset.copy()
-    df["hour"] = df["datetime"].dt.hour
-    df["day_of_year"] = df["datetime"].dt.dayofyear
-    df["day_of_week"] = df["datetime"].dt.dayofweek
-    df["month"] = df["datetime"].dt.month
-    df["hour_sin"] = np.sin(2 * np.pi * df["hour"] / 24)
-    df["hour_cos"] = np.cos(2 * np.pi * df["hour"] / 24)
-    df["day_sin"] = np.sin(2 * np.pi * df["day_of_year"] / 365.25)
-    df["day_cos"] = np.cos(2 * np.pi * df["day_of_year"] / 365.25)
-    df["week_sin"] = np.sin(2 * np.pi * df["day_of_week"] / 7)
-    df["week_cos"] = np.cos(2 * np.pi * df["day_of_week"] / 7)
-    df = df.drop(columns=["hour", "day_of_year", "day_of_week", "month"])
+    df = make_time_features(df)
 
     return df.copy()
