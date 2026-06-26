@@ -253,4 +253,4 @@ geomagnesis_data = pd.read_csv("../data/datasets/test_2025.csv")
 # прогноз / валидация
 result = model.validate(geomagnesis_data, batch_size=32)
 ```
-**[Полный пример использования](notebooks/examples/usage_example.ipynb)**
+**[Полный пример использования](notebooks/examples/predict_next.ipynb)**
